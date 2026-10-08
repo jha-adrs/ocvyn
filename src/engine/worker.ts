@@ -1,0 +1,170 @@
+// Engine worker: owns one file, builds the row index, runs queries, serves row windows.
+import { readFileSync, statSync } from 'node:fs';
+import { basename, extname } from 'node:path';
+import { parentPort, workerData } from 'node:worker_threads';
+import type { Meta, Query, ToEngine, ToWebview } from '../protocol.ts';
+import { CsvSource, MAX_CSV_BYTES } from './csvSource.ts';
+import { distinctValues, likeMatcher, runQuery, type Distinct } from './query.ts';
+import type { RowSource } from './types.ts';
+import { MAX_XLSX_BYTES, readWorkbook, SheetSource } from './xlsxSource.ts';
+
+const port = parentPort!;
+const send = (m: ToWebview) => port.postMessage(m);
+const yieldNow = () => new Promise<void>(r => setImmediate(r));
+
+const path: string = workerData.path;
+const ext = extname(path).toLowerCase();
+const isExcel = ext === '.xlsx' || ext === '.xls';
+const DELIM_NAMES: Record<number, string> = { 44: 'comma', 9: 'tab', 59: 'semicolon', 124: 'pipe' };
+
+let src: RowSource | undefined;
+let baseMeta: Meta | undefined;
+let view: Uint32Array | null = null; // null = every row, in file order
+let viewId = 0; // bumped whenever `view` or `src` changes
+let latestQuery = 0;
+let workbook: ReturnType<typeof readWorkbook> | undefined;
+let distinctCache = new Map<number, Promise<Distinct>>(); // per column, for the dropdown
+let lastSearch: { col: number; search: string; idx: number[] } | undefined;
+let markIndexed!: () => void;
+const indexed = new Promise<void>(r => (markIndexed = r));
+
+const mb = (n: number) => `${Math.round(n / 1024 / 1024)} MB`;
+
+function sendMeta() {
+  send({ type: 'meta', viewId, meta: { ...baseMeta!, header: src!.header, columnTypes: src!.columnTypes } });
+}
+
+async function start() {
+  const size = statSync(path).size;
+  const limit = isExcel ? MAX_XLSX_BYTES : MAX_CSV_BYTES;
+  if (size > limit) {
+    send({ type: 'error', fatal: true, message: `${basename(path)} is ${mb(size)}. OCVYN opens ${isExcel ? 'Excel' : 'CSV'} files up to ${mb(limit)}.` });
+    return;
+  }
+  const buf = readFileSync(path);
+  baseMeta = { fileName: basename(path), sizeBytes: size, header: [], columnTypes: [] };
+  const t0 = performance.now();
+
+  if (isExcel) {
+    workbook = readWorkbook(buf);
+    baseMeta.sheets = workbook.SheetNames;
+    loadSheet(workbook.SheetNames[0]);
+    markIndexed();
+    send({ type: 'progress', phase: 'indexing', rowsDone: src!.rowCount, done: true, ms: performance.now() - t0 });
+    return;
+  }
+
+  const csv = new CsvSource(buf, ext === '.tsv');
+  src = csv;
+  baseMeta.delimiter = DELIM_NAMES[csv.delimiter];
+  let sentMeta = false;
+  while (!csv.indexChunk(8 << 20)) {
+    if (!sentMeta && csv.columnTypes.length > 0) { sendMeta(); sentMeta = true; }
+    send({ type: 'progress', phase: 'indexing', rowsDone: csv.rowCount, done: false });
+    await yieldNow(); // let row requests through while indexing
+  }
+  if (!sentMeta) sendMeta();
+  markIndexed();
+  send({
+    type: 'progress', phase: 'indexing', rowsDone: csv.rowCount, done: true, ms: performance.now() - t0,
+    warning: csv.unclosedQuote ? 'unclosed quote — last cell runs to end of file' : undefined,
+  });
+}
+
+function loadSheet(name: string) {
+  src = new SheetSource(workbook!, name);
+  baseMeta!.sheet = name;
+  distinctCache = new Map();
+  lastSearch = undefined;
+  view = null;
+  viewId++;
+  sendMeta();
+  send({ type: 'progress', phase: 'indexing', rowsDone: src.rowCount, done: true });
+}
+
+async function onQuery(q: Query) {
+  latestQuery = q.id;
+  await indexed;
+  if (q.id !== latestQuery) return;
+  const t0 = performance.now();
+  const total = src!.rowCount;
+  const result = await runQuery(src!, q, {
+    isStale: () => q.id !== latestQuery,
+    onProgress: rowsDone => send({ type: 'progress', phase: 'query', rowsDone, done: false }),
+  });
+  if (result === undefined) return; // superseded
+  view = result;
+  viewId++;
+  const ms = performance.now() - t0;
+  send({ type: 'queryResult', id: q.id, viewId, matchCount: view ? view.length : total, totalRows: total, ms });
+  send({ type: 'progress', phase: 'query', rowsDone: total, done: true });
+}
+
+function onRows(start: number, count: number) {
+  if (!src) return;
+  const n = view ? view.length : src.rowCount;
+  const end = Math.min(n, start + Math.min(count, 1000));
+  const rows = [];
+  for (let k = Math.max(0, start); k < end; k++) {
+    const i = view ? view[k] : k;
+    rows.push({ line: i + 1, cells: src.getRow(i) });
+  }
+  send({ type: 'rowsResult', viewId, start, rows });
+}
+
+/** One page of a column's distinct values, narrowed by the dropdown's search / LIKE box. */
+async function onDistinct(m: Extract<ToEngine, { type: 'distinct' }>) {
+  await indexed;
+  const s = src!;
+  let d = distinctCache.get(m.col);
+  if (!d) distinctCache.set(m.col, (d = distinctValues(s, m.col)));
+  const { values, counts, truncated } = await d;
+  if (s !== src) return; // sheet changed meanwhile
+  const search = m.search.trim();
+  let idx: number[] | undefined;
+  if (search) {
+    if (lastSearch?.col === m.col && lastSearch.search === search) idx = lastSearch.idx;
+    else {
+      const match = likeMatcher(search);
+      idx = [];
+      for (let k = 0; k < values.length; k++) if (values[k] !== '' && match(values[k])) idx.push(k);
+      lastSearch = { col: m.col, search, idx };
+    }
+  }
+  const total = idx ? idx.length : values.length;
+  const page = [];
+  for (let j = m.offset; j < Math.min(total, m.offset + m.limit); j++) {
+    const k = idx ? idx[j] : j;
+    page.push({ v: values[k], n: counts[k] });
+  }
+  send({ type: 'distinctResult', reqId: m.reqId, offset: m.offset, values: page, total, truncated });
+}
+
+const MAX_COPY_ROWS = 100_000;
+const tsvCell = (c: string) => (/[\t\n\r"]/.test(c) ? `"${c.replace(/"/g, '""')}"` : c);
+
+/** Selected rows (view positions) as tab-separated text, ready to paste into a spreadsheet. */
+function onCopyRows(ranges: [number, number][], cols?: number[]) {
+  if (!src) return;
+  const n = view ? view.length : src.rowCount;
+  const lines: string[] = [];
+  let truncated = false;
+  for (const [a, b] of [...ranges].sort((x, y) => x[0] - y[0])) {
+    for (let k = Math.max(0, a); k <= Math.min(b, n - 1); k++) {
+      if (lines.length >= MAX_COPY_ROWS) { truncated = true; break; }
+      const cells = src.getRow(view ? view[k] : k);
+      lines.push((cols ? cols.map(c => cells[c] ?? '') : cells).map(tsvCell).join('\t'));
+    }
+  }
+  send({ type: 'copyText', text: lines.join('\n'), rows: lines.length, truncated });
+}
+
+port.on('message', (m: ToEngine) => {
+  if (m.type === 'query') void onQuery(m.query);
+  else if (m.type === 'rows') onRows(m.start, m.count);
+  else if (m.type === 'selectSheet' && workbook) loadSheet(m.name);
+  else if (m.type === 'distinct') void onDistinct(m);
+  else if (m.type === 'copyRows') onCopyRows(m.ranges, m.cols);
+});
+
+start().catch(e => send({ type: 'error', fatal: true, message: String(e?.message ?? e) }));

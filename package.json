@@ -1,0 +1,123 @@
+{
+  "name": "ocvyn",
+  "displayName": "OCVYN — Only CSV Viewer You Need",
+  "description": "Fast, read-only grid for large CSV, TSV and spreadsheet (.xlsx/.xls) files: value filters with LIKE search, multi-level sort, frozen columns and colour-coded columns.",
+  "version": "0.3.0",
+  "publisher": "platinumj",
+  "license": "MIT",
+  "author": {
+    "name": "jha-adrs"
+  },
+  "icon": "media/icon.png",
+  "galleryBanner": {
+    "color": "#1e2430",
+    "theme": "dark"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/jha-adrs/ocvyn.git"
+  },
+  "bugs": {
+    "url": "https://github.com/jha-adrs/ocvyn/issues"
+  },
+  "homepage": "https://github.com/jha-adrs/ocvyn#readme",
+  "keywords": [
+    "csv",
+    "tsv",
+    "xlsx",
+    "xls",
+    "excel",
+    "spreadsheet",
+    "table",
+    "grid",
+    "viewer",
+    "csv viewer",
+    "data viewer",
+    "data",
+    "filter",
+    "sort",
+    "large files",
+    "big data",
+    "preview",
+    "freeze columns",
+    "column filter",
+    "read-only"
+  ],
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Data Science",
+    "Visualization",
+    "Other"
+  ],
+  "main": "./dist/extension.js",
+  "activationEvents": [],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": true
+    }
+  },
+  "contributes": {
+    "customEditors": [
+      {
+        "viewType": "ocvyn.grid",
+        "displayName": "OCVYN Grid",
+        "selector": [
+          {
+            "filenamePattern": "*.csv"
+          },
+          {
+            "filenamePattern": "*.tsv"
+          },
+          {
+            "filenamePattern": "*.xlsx"
+          },
+          {
+            "filenamePattern": "*.xls"
+          }
+        ],
+        "priority": "default"
+      }
+    ],
+    "commands": [
+      {
+        "command": "ocvyn.openInGrid",
+        "title": "Open in OCVYN",
+        "icon": "$(table)"
+      }
+    ],
+    "menus": {
+      "editor/title": [
+        {
+          "command": "ocvyn.openInGrid",
+          "when": "resourceExtname =~ /^\\.(csv|tsv|xlsx|xls)$/i && activeCustomEditorId != 'ocvyn.grid'",
+          "group": "navigation"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "ocvyn.openInGrid",
+          "when": "resourceExtname =~ /^\\.(csv|tsv|xlsx|xls)$/i"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "watch": "node scripts/build.mjs --watch",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test \"test/*.test.ts\"",
+    "package": "npm run build && vsce package",
+    "gen-csv": "node scripts/gen-csv.mjs",
+    "bench": "node scripts/bench.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.43",
+    "@types/vscode": "1.90",
+    "@vscode/vsce": "^4.0.0",
+    "esbuild": "^0.28.2",
+    "typescript": "^7.0.2",
+    "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz"
+  }
+}

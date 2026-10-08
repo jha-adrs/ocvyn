@@ -1,0 +1,12 @@
+**
+!dist/extension.js
+!dist/worker.js
+!dist/webview.js
+!dist/webview.css
+!media/icon.png
+!package.json
+!README.md
+!CHANGELOG.md
+!LICENSE
+!THIRD_PARTY_NOTICES.md
+!PRIVACY.md
