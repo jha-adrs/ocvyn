@@ -4,6 +4,8 @@ Open big CSV, TSV and spreadsheet files in VS Code as a fast, read-only grid.
 Filter like a spreadsheet, sort by several columns, freeze columns, and copy what you need.
 Everything runs locally. Nothing is uploaded, and your file is never changed.
 
+> **Beta.** OCVYN is still in beta. It is provided "as is", without warranty of any kind. Use it at your own risk. See [Disclaimer](#disclaimer).
+
 ![Grid with a filter, a sort and frozen columns](media/overview.png)
 
 ## Features
@@ -56,6 +58,12 @@ OCVYN collects no data, has no telemetry and makes no network requests. See [PRI
 ## Credits
 
 Reads Excel files with [SheetJS Community Edition](https://sheetjs.com/) (Apache-2.0). See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
+## Disclaimer
+
+OCVYN is beta software, provided "as is", without warranty of any kind, express or implied. You use it at your own risk. The author is not liable for any claim, damage or loss arising from its use, including incorrect display, filtering, sorting or copying of data. Always check important results against the original file.
+
+By installing or using OCVYN you agree to the terms of its [MIT License](LICENSE) and to this disclaimer, and acknowledge the [privacy notice](PRIVACY.md).
 
 ## License
 

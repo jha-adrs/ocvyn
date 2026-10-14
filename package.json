@@ -5,6 +5,7 @@
   "version": "0.3.0",
   "publisher": "platinumj",
   "license": "MIT",
+  "preview": true,
   "author": {
     "name": "jha-adrs"
   },
