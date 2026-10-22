@@ -3,7 +3,7 @@ import { readFileSync, statSync } from 'node:fs';
 import { basename, extname } from 'node:path';
 import { parentPort, workerData } from 'node:worker_threads';
 import type { Meta, Query, ToEngine, ToWebview } from '../protocol.ts';
-import { CsvSource, MAX_CSV_BYTES } from './csvSource.ts';
+import { CsvSource, MAX_COLUMNS, MAX_CSV_BYTES } from './csvSource.ts';
 import { distinctValues, likeMatcher, runQuery, type Distinct } from './query.ts';
 import type { RowSource } from './types.ts';
 import { MAX_XLSX_BYTES, readWorkbook, SheetSource } from './xlsxSource.ts';
@@ -31,6 +31,7 @@ const indexed = new Promise<void>(r => (markIndexed = r));
 const mb = (n: number) => `${Math.round(n / 1024 / 1024)} MB`;
 
 function sendMeta() {
+  if (src!.header.length > MAX_COLUMNS) throw new Error(`the sheet has ${src!.header.length.toLocaleString('en-US')} columns; OCVYN opens up to ${MAX_COLUMNS.toLocaleString('en-US')}`);
   send({ type: 'meta', viewId, meta: { ...baseMeta!, header: src!.header, columnTypes: src!.columnTypes } });
 }
 
@@ -78,6 +79,7 @@ function loadSheet(name: string) {
   lastSearch = undefined;
   view = null;
   viewId++;
+  latestQuery = -1; // a query still running belongs to the old sheet
   sendMeta();
   send({ type: 'progress', phase: 'indexing', rowsDone: src.rowCount, done: true });
 }
@@ -87,18 +89,22 @@ async function onQuery(q: Query) {
   await indexed;
   if (q.id !== latestQuery) return;
   const t0 = performance.now();
-  const total = src!.rowCount;
-  const result = await runQuery(src!, q, {
+  const s = src!;
+  const total = s.rowCount;
+  const result = await runQuery(s, q, {
     isStale: () => q.id !== latestQuery,
     onProgress: rowsDone => send({ type: 'progress', phase: 'query', rowsDone, done: false }),
   });
-  if (result === undefined) return; // superseded
+  if (result === undefined || s !== src) return; // superseded, or the sheet changed meanwhile
   view = result;
   viewId++;
   const ms = performance.now() - t0;
   send({ type: 'queryResult', id: q.id, viewId, matchCount: view ? view.length : total, totalRows: total, ms });
   send({ type: 'progress', phase: 'query', rowsDone: total, done: true });
 }
+
+const MAX_CELL_CHARS = 10_000; // a multi-MB cell would freeze the grid; copy still gets the full value
+const clip = (c: string) => (c.length > MAX_CELL_CHARS ? c.slice(0, MAX_CELL_CHARS) + '…' : c);
 
 function onRows(start: number, count: number) {
   if (!src) return;
@@ -107,7 +113,7 @@ function onRows(start: number, count: number) {
   const rows = [];
   for (let k = Math.max(0, start); k < end; k++) {
     const i = view ? view[k] : k;
-    rows.push({ line: i + 1, cells: src.getRow(i) });
+    rows.push({ line: i + 1, cells: src.getRow(i).map(clip) });
   }
   send({ type: 'rowsResult', viewId, start, rows });
 }
@@ -159,12 +165,19 @@ function onCopyRows(ranges: [number, number][], cols?: number[]) {
   send({ type: 'copyText', text: lines.join('\n'), rows: lines.length, truncated });
 }
 
+const fatal = (e: unknown) => send({ type: 'error', fatal: true, message: String((e as Error)?.message ?? e) });
+const ints = (...v: unknown[]) => v.every(x => Number.isInteger(x));
+const intPairs = (v: unknown): v is [number, number][] => Array.isArray(v) && v.every(p => Array.isArray(p) && p.length === 2 && ints(...p));
+
+// Messages come from our own webview, but a malformed one must not take the worker down.
 port.on('message', (m: ToEngine) => {
-  if (m.type === 'query') void onQuery(m.query);
-  else if (m.type === 'rows') onRows(m.start, m.count);
-  else if (m.type === 'selectSheet' && workbook) loadSheet(m.name);
-  else if (m.type === 'distinct') void onDistinct(m);
-  else if (m.type === 'copyRows') onCopyRows(m.ranges, m.cols);
+  try {
+    if (m.type === 'query' && m.query?.filter?.rules && m.query.sort) onQuery(m.query).catch(fatal);
+    else if (m.type === 'rows' && ints(m.start, m.count)) onRows(m.start, m.count);
+    else if (m.type === 'selectSheet' && workbook && workbook.SheetNames.includes(m.name)) loadSheet(m.name);
+    else if (m.type === 'distinct' && ints(m.reqId, m.col, m.offset, m.limit) && typeof m.search === 'string') onDistinct({ ...m, limit: Math.min(m.limit, 1000) }).catch(fatal);
+    else if (m.type === 'copyRows' && intPairs(m.ranges) && (m.cols === undefined || (ints(...m.cols) && m.cols.length <= MAX_COLUMNS))) onCopyRows(m.ranges, m.cols);
+  } catch (e) { fatal(e); }
 });
 
-start().catch(e => send({ type: 'error', fatal: true, message: String(e?.message ?? e) }));
+start().catch(fatal);

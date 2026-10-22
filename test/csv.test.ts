@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { CsvSource, detectDelimiter } from '../src/engine/csvSource.ts';
-import { detectTypes, parseNum } from '../src/engine/types.ts';
+import { cleanHeader, detectTypes, parseNum } from '../src/engine/types.ts';
 
 const load = (text: string | Buffer, tsv = false) => {
   const s = new CsvSource(Buffer.isBuffer(text) ? text : Buffer.from(text), tsv);
@@ -100,4 +100,33 @@ test('type detection', () => {
   );
   assert.deepEqual(types, ['number', 'text', 'number', 'number', 'text']);
   assert.deepEqual(detectTypes([[''], ['']], 1), ['text']); // all empty
+});
+
+test('a stray quote inside a field does not swallow the rest of the file', () => {
+  const src = new CsvSource(Buffer.from('name\tsize\nA\t5" pipe\nB\t6\nC\t7\n'), true);
+  src.indexAll();
+  assert.equal(src.rowCount, 3);
+  assert.equal(src.unclosedQuote, false);
+  assert.deepEqual(src.getRow(0), ['A', '5" pipe']);
+  assert.deepEqual(src.getRow(2), ['C', '7']);
+});
+
+test('CR-only line endings', () => {
+  const src = new CsvSource(Buffer.from('a,b\r1,2\r3,4\r'));
+  src.indexAll();
+  assert.deepEqual(src.header, ['a', 'b']);
+  assert.equal(src.rowCount, 2);
+  assert.deepEqual(src.getRow(1), ['3', '4']);
+});
+
+test('parseNum rejects decimal commas, lists and hex', () => {
+  assert.equal(parseNum('1,000'), 1000);
+  assert.equal(parseNum(' 42 '), 42);
+  assert.equal(parseNum('1e5'), 100000);
+  assert.equal(parseNum('-.5'), -0.5);
+  for (const bad of ['3,14', '1,2,3', '0x1A', '0b11', 'Infinity', '-', '']) assert.ok(Number.isNaN(parseNum(bad)), bad);
+});
+
+test('cleanHeader never produces duplicate names', () => {
+  assert.deepEqual(cleanHeader(['column_3', 'b', '']), ['column_3', 'b', 'column_3_2']);
 });

@@ -11,12 +11,15 @@ export interface RowSource {
   getRaw?(i: number): string;
 }
 
-/** Parse a cell as a number. Commas are treated as thousands separators. NaN if not a number. */
+const NUM = /^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/;
+const GROUPED = /^[+-]?\d{1,3}(,\d{3})+(\.\d+)?$/; // 1,234,567.89 — but not 3,14 or 1,2,3
+
+/** Parse a cell as a plain decimal number (optionally with thousands separators). NaN otherwise. */
 export function parseNum(s: string): number {
   const t = s.trim();
-  if (t === '') return NaN;
-  const n = Number(t.indexOf(',') >= 0 ? t.replace(/,/g, '') : t);
-  return Number.isFinite(n) ? n : NaN;
+  if (NUM.test(t)) return Number(t);
+  if (GROUPED.test(t)) return Number(t.replace(/,/g, ''));
+  return NaN;
 }
 
 /** A column is `number` if ≥ 95% of its non-empty sampled cells parse as numbers. */
@@ -41,6 +44,7 @@ export function cleanHeader(raw: string[]): string[] {
   return raw.map((h, i) => {
     let name = h.trim();
     if (name === '' || seen.has(name)) name = `column_${i + 1}`;
+    for (let k = 2; seen.has(name); k++) name = `column_${i + 1}_${k}`; // the file may already have a column_N
     seen.add(name);
     return name;
   });

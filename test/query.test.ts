@@ -115,3 +115,21 @@ test('distinct values: counts, sorted, blanks last, cap', async () => {
   assert.equal(capped.truncated, true);
   assert.equal(capped.values.length, 2);
 });
+
+test('search finds cells that contain a quote', async () => {
+  const src = new CsvSource(Buffer.from('a,b\n"say ""hi""",1\nbye,2\n'));
+  src.indexAll();
+  const r = await runQuery(src, { id: 1, filter: { mode: 'all', rules: [] }, search: 'say "hi"', sort: [] }, { isStale: () => false });
+  assert.deepEqual([...r!], [0]);
+});
+
+test('LIKE with many wildcards is fast and correct', () => {
+  const m = likeMatcher('%a%a%a%a%a%a%a%a%b');
+  const t0 = performance.now();
+  assert.equal(m('a'.repeat(5000)), false);
+  assert.equal(m('a'.repeat(5000) + 'b'), true);
+  assert.ok(performance.now() - t0 < 200);
+  assert.equal(likeMatcher('p_ne%')('Pineapple'), true);
+  assert.equal(likeMatcher('%%%ing')('string'), true);
+  assert.equal(likeMatcher('a%')('ba'), false);
+});

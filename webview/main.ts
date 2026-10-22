@@ -83,13 +83,18 @@ window.addEventListener('message', (ev: MessageEvent<ToWebview>) => {
       const sheetChanged = meta && meta.sheet !== m.meta.sheet;
       meta = m.meta;
       viewId = m.viewId;
-      if (sheetChanged) { rules = []; sort = []; search = ''; searchBox.value = ''; identityView = true; }
+      if (sheetChanged) {
+        rules = []; sort = []; search = ''; searchBox.value = ''; identityView = true;
+        queryId++; querying = false; // drop a query that was still running on the old sheet
+        frozen = 0; scroller.scrollTop = 0;
+      }
       widths = meta.header.map((name, c) => Math.min(320, Math.max(meta!.columnTypes[c] === 'number' ? 90 : 120, name.length * 8 + 64)));
       resetView();
       renderAll();
       break;
     }
-    case 'progress':
+    case 'progress': {
+      const before = `${count}|${querying}|${indexingDone}`;
       if (m.phase === 'indexing') {
         totalRows = m.rowsDone;
         if (identityView) count = m.rowsDone;
@@ -99,10 +104,11 @@ window.addEventListener('message', (ev: MessageEvent<ToWebview>) => {
       } else {
         querying = !m.done;
       }
-      renderBar();
-      renderBody();
+      // Only redraw the grid when something it shows changed: a redraw wipes text the user is selecting.
+      if (`${count}|${querying}|${indexingDone}` !== before) { renderBar(); renderBody(); }
       renderFooter();
       break;
+    }
     case 'queryResult':
       if (m.id !== queryId) return;
       querying = false;
@@ -276,8 +282,7 @@ function openPopover(addRow = false) {
   };
 
   pop.addEventListener('keydown', e => {
-    if (e.key === 'Enter') { e.preventDefault(); apply(); }
-    if (e.key === 'Escape') closePopover();
+    if (e.key === 'Enter' && !(e.target instanceof HTMLButtonElement)) { e.preventDefault(); apply(); }
   });
   pop.addEventListener('mousedown', e => e.stopPropagation());
   draw();
@@ -289,11 +294,13 @@ function closePopover() {
   popover?.remove();
   popover = undefined;
   onDistinct = undefined;
+  clearTimeout(distinctTimer);
 }
 
 // ---- column dropdown (Excel-style value list + search / LIKE) ----
 let onDistinct: ((m: Extract<ToWebview, { type: 'distinctResult' }>) => void) | undefined;
 let distinctReq = 0;
+let distinctTimer: ReturnType<typeof setTimeout> | undefined; // search-box debounce in the dropdown
 
 function openColumnFilter(col: number) {
   closePopover();
@@ -306,6 +313,7 @@ function openColumnFilter(col: number) {
   let truncated = false;
   let reqId = 0;
   let loading = false;
+  let loaded = false; // first page of values arrived
 
   const pop = h('div', 'popover colpop');
   popover = pop;
@@ -344,7 +352,8 @@ function openColumnFilter(col: number) {
     allText.textContent = sel.search.trim() ? 'Select all matching' : 'Select all';
     applyBtn.disabled = valuesRuleFrom(col, sel) === undefined;
     const n = total.toLocaleString('en-US');
-    status.textContent = `${n} value${total === 1 ? '' : 's'}${truncated ? ' · column has more than 500,000 distinct values; only those are listed' : ''}`;
+    status.textContent = !loaded ? 'Loading values…'
+      : `${n} value${total === 1 ? '' : 's'}${truncated ? ' · column has more than 500,000 distinct values; only those are listed' : ''}`;
   };
   const addItems = (page: { v: string; n: number }[]) => {
     for (const it of page) {
@@ -370,6 +379,7 @@ function openColumnFilter(col: number) {
   onDistinct = m => {
     if (m.reqId !== reqId || m.offset !== items.length) return;
     loading = false;
+    loaded = true;
     items.push(...m.values);
     total = m.total;
     truncated = m.truncated;
@@ -379,10 +389,16 @@ function openColumnFilter(col: number) {
   list.addEventListener('scroll', () => {
     if (list.scrollTop + list.clientHeight > list.scrollHeight - 80 && items.length < total) load(false);
   });
-  let t: ReturnType<typeof setTimeout> | undefined;
+  // Typing resets to "all matching ticked", like Excel. Apply/Enter inside the debounce must see the same state.
+  const takeSearch = () => {
+    clearTimeout(distinctTimer);
+    if (sel.search === box.value) return false;
+    sel.search = box.value; sel.base = 'all'; sel.toggled.clear();
+    return true;
+  };
   box.addEventListener('input', () => {
-    clearTimeout(t);
-    t = setTimeout(() => { sel.search = box.value; sel.base = 'all'; sel.toggled.clear(); load(true); }, 200);
+    clearTimeout(distinctTimer);
+    distinctTimer = setTimeout(() => { if (takeSearch()) load(true); }, 200);
   });
   allBox.addEventListener('change', () => {
     sel.base = allBox.checked ? 'all' : 'none';
@@ -391,6 +407,7 @@ function openColumnFilter(col: number) {
     syncHeader();
   });
   const apply = () => {
+    takeSearch();
     const r = valuesRuleFrom(col, sel);
     if (r === undefined) return;
     rules = rules.filter(x => !(x.col === col && x.op === 'values'));
@@ -402,8 +419,7 @@ function openColumnFilter(col: number) {
   cancel.addEventListener('click', () => closePopover());
   clear.addEventListener('click', () => { rules = rules.filter(x => x !== existing); closePopover(); sendQuery(); });
   pop.addEventListener('keydown', e => {
-    if (e.key === 'Enter') { e.preventDefault(); clearTimeout(t); sel.search = box.value; apply(); }
-    if (e.key === 'Escape') closePopover();
+    if (e.key === 'Enter' && !(e.target instanceof HTMLButtonElement)) { e.preventDefault(); apply(); }
   });
   pop.addEventListener('mousedown', e => e.stopPropagation());
 
@@ -645,8 +661,8 @@ function renderFooter() {
   }
   footer.append(h('span', 'grow'));
   if (warning) footer.append(h('span', 'warn', `⚠ ${warning}`));
-  const parts = ['UTF-8'];
-  if (meta.delimiter) parts.push(meta.delimiter);
+  const parts: string[] = [];
+  if (meta.delimiter) parts.push('UTF-8', meta.delimiter);
   if (meta.sheet) parts.push(`sheet ${meta.sheet}`);
   parts.push(indexingDone ? `indexed ${(indexMs / 1000).toFixed(1)}s` : `indexing ${totalRows.toLocaleString('en-US')} rows…`);
   footer.append(h('span', 'dim', parts.join(' · ')));
@@ -662,6 +678,7 @@ function flash(text: string) {
 
 // ---- fatal error ----
 function showFatal(message: string) {
+  app.querySelector('.fatal')?.remove(); // a crash reports twice (error + exit); show one box
   const box = h('div', 'fatal');
   box.append(h('div', 'fatal-msg', message));
   const btn = h('button', '', 'Reload');
@@ -686,8 +703,9 @@ function showFatal(message: string) {
 // ---- keys ----
 document.addEventListener('keydown', e => {
   const mod = e.metaKey || e.ctrlKey;
-  if (mod && e.key === 'f') { e.preventDefault(); searchBox.focus(); searchBox.select(); }
-  else if (mod && e.key === 'c' && !(e.target instanceof HTMLInputElement)) {
+  const key = e.key.toLowerCase(); // Caps Lock gives 'F' / 'C'
+  if (mod && key === 'f') { e.preventDefault(); searchBox.focus(); searchBox.select(); }
+  else if (mod && key === 'c' && !(e.target instanceof HTMLInputElement)) {
     if (window.getSelection()?.toString()) return; // the user selected text: let the normal copy happen
     if (colSel !== undefined) { e.preventDefault(); copyWhat = 'value'; post({ type: 'copyRows', ranges: [[0, count - 1]], cols: [colSel] }); }
     else if (rowMode && selectedCount(rowSel) > 0) { e.preventDefault(); copyWhat = 'row'; post({ type: 'copyRows', ranges: rowSel.ranges }); }
@@ -697,7 +715,7 @@ document.addEventListener('keydown', e => {
   else if (e.key === 'Escape' && !(e.target instanceof HTMLInputElement) && (selectedCount(rowSel) > 0 || sel || colSel !== undefined)) {
     rowSel = noRows(); rowMode = false; sel = undefined; colSel = undefined; applySelection(); renderFooter();
   }
-  else if (e.key === 'Escape' && document.activeElement === searchBox && searchBox.value) { searchBox.value = ''; search = ''; sendQuery(); }
+  else if (e.key === 'Escape' && document.activeElement === searchBox && searchBox.value) { clearTimeout(searchTimer); searchBox.value = ''; search = ''; sendQuery(); }
 });
 
 function renderAll() {

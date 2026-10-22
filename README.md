@@ -45,7 +45,8 @@ CSV, TSV, XLSX and XLS files open in OCVYN automatically.
 ## Limits
 
 - Read-only: there is no editing or saving.
-- CSV/TSV files up to 500 MB; Excel files up to 50 MB.
+- CSV/TSV files up to 500 MB; Excel files up to 50 MB. Up to 10,000 columns and 50 million rows.
+- Cells longer than 10,000 characters are shortened in the grid (copying still gives the full value).
 - Files are read as UTF-8.
 - The view is a snapshot. If the file changes on disk, close and reopen it.
 - A column's value list shows up to 500,000 distinct values. Filters and LIKE still check every row.

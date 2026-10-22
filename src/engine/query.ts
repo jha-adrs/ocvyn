@@ -24,9 +24,20 @@ export function isValidRule(r: Rule, width: number): boolean {
 export function likeMatcher(pattern: string): (cell: string) => boolean {
   const p = pattern.trim().toLowerCase();
   if (!p.includes('%')) return c => c.toLowerCase().includes(p);
-  const body = p.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/%/g, '.*').replace(/_/g, '.');
-  const re = new RegExp(`^${body}$`, 's');
-  return c => re.test(c.trim().toLowerCase());
+  return c => likeMatch(c.trim().toLowerCase(), p);
+}
+
+/** Wildcard match without regex backtracking: O(text × pattern) even for patterns full of `%`. */
+function likeMatch(s: string, p: string): boolean {
+  let si = 0, pi = 0, star = -1, mark = 0;
+  while (si < s.length) {
+    if (pi < p.length && (p[pi] === '_' || p[pi] === s[si])) { si++; pi++; }
+    else if (pi < p.length && p[pi] === '%') { star = pi++; mark = si; }
+    else if (star >= 0) { pi = star + 1; si = ++mark; }
+    else return false;
+  }
+  while (pi < p.length && p[pi] === '%') pi++;
+  return pi === p.length;
 }
 
 function compile(r: Rule): (cell: string) => boolean {
@@ -56,6 +67,7 @@ function compile(r: Rule): (cell: string) => boolean {
         return like ? like(t) : true;
       };
     }
+    default: return () => true; // unknown op (shouldn't happen): ignore the rule rather than crash
   }
 }
 
@@ -70,6 +82,7 @@ export async function runQuery(src: RowSource, q: Query, ctx: QueryCtx): Promise
   const tests = rules.map(r => ({ col: r.col, test: compile(r) }));
   const any = q.filter.mode === 'any';
   const search = q.search.trim().toLowerCase();
+  const rawCheck = !search.includes('"'); // raw text has `""` where the cell has `"`, so the pre-check would miss
   const sort = q.sort.filter(s => s.col >= 0 && s.col < width);
   if (tests.length === 0 && !search && sort.length === 0) return null;
 
@@ -88,7 +101,7 @@ export async function runQuery(src: RowSource, q: Query, ctx: QueryCtx): Promise
         ctx.onProgress?.(i);
       }
       if (search) {
-        if (src.getRaw && !src.getRaw(i).toLowerCase().includes(search)) continue;
+        if (rawCheck && src.getRaw && !src.getRaw(i).toLowerCase().includes(search)) continue;
         if (!src.getRow(i).some(c => c.toLowerCase().includes(search))) continue;
       }
       if (tests.length > 0) {

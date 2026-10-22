@@ -2,20 +2,25 @@ import type { ColumnType } from '../protocol.ts';
 import { cleanHeader, detectTypes, fitRow, type RowSource } from './types.ts';
 
 export const MAX_CSV_BYTES = 500 * 1024 * 1024;
+export const MAX_COLUMNS = 10_000;
+export const MAX_ROWS = 50_000_000; // keeps the offset index and query arrays under ~1 GB
 
 const LF = 10, CR = 13, QUOTE = 34;
 const CANDIDATES = [44, 9, 59, 124]; // , \t ; |
 
+/** A quote only opens a quoted field at the start of a field (RFC 4180); `5" pipe` is plain text. */
+const fieldStart = (prev: number) => prev === LF || prev === CR || CANDIDATES.includes(prev);
+
 /** Pick the delimiter whose per-line count is most consistent over the first 64 KB. */
-export function detectDelimiter(buf: Buffer, start: number): number {
+export function detectDelimiter(buf: Buffer, start: number, nl = LF): number {
   const end = Math.min(buf.length, start + 65536);
   const lines: Map<number, number>[] = [];
   let cur = new Map<number, number>();
   let inQuote = false;
   for (let i = start; i < end && lines.length < 50; i++) {
     const b = buf[i];
-    if (b === QUOTE) inQuote = !inQuote;
-    else if (!inQuote && b === LF) { lines.push(cur); cur = new Map(); }
+    if (b === QUOTE) { if (inQuote || i === start || fieldStart(buf[i - 1])) inQuote = !inQuote; }
+    else if (!inQuote && b === nl) { lines.push(cur); cur = new Map(); }
     else if (!inQuote && CANDIDATES.includes(b)) cur.set(b, (cur.get(b) ?? 0) + 1);
   }
   if (end === buf.length) lines.push(cur); // last line is complete only if we reached EOF
@@ -40,6 +45,7 @@ export class CsvSource implements RowSource {
   readonly delimiter: number;
   readonly buf: Buffer;
   private readonly delimChar: string;
+  private readonly nl: number; // record terminator byte: LF, or CR for old Mac files with no LF at all
 
   private offsets = new Uint32Array(1 << 16); // start byte of each record, header included
   private nRecords = 0;
@@ -51,24 +57,28 @@ export class CsvSource implements RowSource {
     const start = buf[0] === 0xef && buf[1] === 0xbb && buf[2] === 0xbf ? 3 : 0;
     this.pos = start;
     this.nq = buf.indexOf(QUOTE, start);
-    this.delimiter = isTsv ? 9 : detectDelimiter(buf, start);
+    this.nl = buf.indexOf(LF, start) === -1 && buf.indexOf(CR, start) !== -1 ? CR : LF;
+    this.delimiter = isTsv ? 9 : detectDelimiter(buf, start, this.nl);
     this.delimChar = String.fromCharCode(this.delimiter);
   }
 
   /** Index roughly maxBytes more of the file. Returns true when the whole file is indexed. */
   indexChunk(maxBytes: number): boolean {
     const buf = this.buf, len = buf.length, stop = Math.min(len, this.pos + maxBytes);
+    const NL = this.nl, delim = this.delimiter;
     let pos = this.pos, nq = this.nq, nl = -1;
     while (pos < stop) {
       const b = buf[pos];
-      if (b === LF) { pos++; continue; } // skip blank lines
+      if (b === NL) { pos++; continue; } // skip blank lines
       if (b === CR && buf[pos + 1] === LF) { pos += 2; continue; }
+      const rec = pos;
       this.push(pos);
       // Walk to the end of this record: the first newline that is not inside quotes.
       for (;;) {
         if (nq !== -1 && nq < pos) nq = buf.indexOf(QUOTE, pos);
-        if (nl < pos) { nl = buf.indexOf(LF, pos); if (nl === -1) nl = len; }
+        if (nl < pos) { nl = buf.indexOf(NL, pos); if (nl === -1) nl = len; }
         if (nq !== -1 && nq < nl) {
+          if (nq !== rec && buf[nq - 1] !== delim) { nq = buf.indexOf(QUOTE, nq + 1); continue; } // stray quote inside a field
           let q = nq + 1, close: number;
           for (;;) {
             close = buf.indexOf(QUOTE, q);
@@ -88,7 +98,10 @@ export class CsvSource implements RowSource {
     this.nq = nq;
     if (pos >= len) this.done = true;
 
-    if (this.header.length === 0 && this.nRecords > 0) this.header = cleanHeader(this.record(0));
+    if (this.header.length === 0 && this.nRecords > 0) {
+      this.header = cleanHeader(this.record(0));
+      if (this.header.length > MAX_COLUMNS) throw new Error(`the file has ${this.header.length.toLocaleString('en-US')} columns; OCVYN opens up to ${MAX_COLUMNS.toLocaleString('en-US')}`);
+    }
     this.rowCount = Math.max(0, this.nRecords - 1);
     if (this.columnTypes.length === 0 && this.header.length > 0 && (this.rowCount >= 1000 || this.done)) {
       const sample: string[][] = [];
@@ -139,6 +152,7 @@ export class CsvSource implements RowSource {
   }
 
   private push(off: number) {
+    if (this.nRecords === MAX_ROWS) throw new Error(`the file has more than ${MAX_ROWS.toLocaleString('en-US')} rows`);
     if (this.nRecords === this.offsets.length) {
       const next = new Uint32Array(this.offsets.length * 2);
       next.set(this.offsets);

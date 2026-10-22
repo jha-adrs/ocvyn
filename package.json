@@ -2,7 +2,7 @@
   "name": "ocvyn",
   "displayName": "OCVYN — Only CSV Viewer You Need",
   "description": "Fast, read-only grid for large CSV, TSV and spreadsheet (.xlsx/.xls) files: value filters with LIKE search, multi-level sort, frozen columns and colour-coded columns.",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "publisher": "platinumj",
   "license": "MIT",
   "preview": true,
@@ -57,6 +57,10 @@
   "capabilities": {
     "untrustedWorkspaces": {
       "supported": true
+    },
+    "virtualWorkspaces": {
+      "supported": false,
+      "description": "OCVYN reads files from disk."
     }
   },
   "contributes": {
@@ -99,12 +103,13 @@
       "commandPalette": [
         {
           "command": "ocvyn.openInGrid",
-          "when": "resourceExtname =~ /^\\.(csv|tsv|xlsx|xls)$/i"
+          "when": "resourceExtname =~ /^\\.(csv|tsv|xlsx|xls)$/i && activeCustomEditorId != 'ocvyn.grid'"
         }
       ]
     }
   },
   "scripts": {
+    "vscode:prepublish": "npm run build",
     "build": "node scripts/build.mjs",
     "watch": "node scripts/build.mjs --watch",
     "typecheck": "tsc --noEmit",

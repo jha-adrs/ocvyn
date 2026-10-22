@@ -27,22 +27,28 @@ export class GridEditorProvider implements vscode.CustomReadonlyEditorProvider {
     const spawn = () => {
       void worker?.terminate();
       if (doc.uri.scheme !== 'file') {
-        post({ type: 'error', fatal: true, message: `OCVYN only opens files on disk (got ${doc.uri.scheme}:).` });
+        // git:, untitled:, virtual workspaces… — hand the file to the text editor instead of a dead end
+        void vscode.commands.executeCommand('vscode.openWith', doc.uri, 'default');
+        panel.dispose();
         return;
       }
-      const w = new Worker(vscode.Uri.joinPath(dist, 'worker.js').fsPath, { workerData: { path: doc.uri.fsPath } });
+      const w = new Worker(vscode.Uri.joinPath(dist, 'worker.js').fsPath, {
+        workerData: { path: doc.uri.fsPath },
+        resourceLimits: { maxOldGenerationSizeMb: 2048 }, // a runaway xlsx kills the worker, not the extension host
+      });
       worker = w;
-      w.on('message', (m: ToWebview) => post(m));
-      w.on('error', e => post({ type: 'error', fatal: true, message: `Engine crashed: ${e.message}` }));
+      w.on('message', (m: ToWebview) => { if (worker === w) post(m); });
+      w.on('error', e => { if (worker === w) post({ type: 'error', fatal: true, message: `Engine crashed: ${e.message}` }); });
       w.on('exit', code => {
         if (worker === w && code !== 0) post({ type: 'error', fatal: true, message: `Engine stopped (exit code ${code}). The file may be too large for available memory.` });
       });
     };
 
+    const ENGINE_TYPES = new Set(['query', 'rows', 'selectSheet', 'distinct', 'copyRows']);
     panel.webview.onDidReceiveMessage((m: FromWebview) => {
       if (m.type === 'ready' || m.type === 'reload') spawn();
-      else if (m.type === 'copy') void vscode.env.clipboard.writeText(m.text);
-      else worker?.postMessage(m);
+      else if (m.type === 'copy') { if (typeof m.text === 'string') void vscode.env.clipboard.writeText(m.text); }
+      else if (ENGINE_TYPES.has(m.type)) worker?.postMessage(m);
     });
 
     panel.onDidDispose(() => {
