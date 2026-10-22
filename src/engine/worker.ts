@@ -4,6 +4,7 @@ import { basename, extname } from 'node:path';
 import { parentPort, workerData } from 'node:worker_threads';
 import type { Meta, Query, ToEngine, ToWebview } from '../protocol.ts';
 import { CsvSource, MAX_COLUMNS, MAX_CSV_BYTES } from './csvSource.ts';
+import { JsonlSource } from './jsonlSource.ts';
 import { distinctValues, likeMatcher, runQuery, type Distinct } from './query.ts';
 import type { RowSource } from './types.ts';
 import { MAX_XLSX_BYTES, readWorkbook, SheetSource } from './xlsxSource.ts';
@@ -15,6 +16,7 @@ const yieldNow = () => new Promise<void>(r => setImmediate(r));
 const path: string = workerData.path;
 const ext = extname(path).toLowerCase();
 const isExcel = ext === '.xlsx' || ext === '.xls';
+const isJsonl = ext === '.jsonl' || ext === '.ndjson';
 const DELIM_NAMES: Record<number, string> = { 44: 'comma', 9: 'tab', 59: 'semicolon', 124: 'pipe' };
 
 let src: RowSource | undefined;
@@ -55,21 +57,22 @@ async function start() {
     return;
   }
 
-  const csv = new CsvSource(buf, ext === '.tsv');
-  src = csv;
-  baseMeta.delimiter = DELIM_NAMES[csv.delimiter];
+  // Line-oriented files are indexed in chunks so the first rows show while the rest loads.
+  const lines = isJsonl ? new JsonlSource(buf) : new CsvSource(buf, ext === '.tsv');
+  src = lines;
+  if (lines instanceof CsvSource) baseMeta.delimiter = DELIM_NAMES[lines.delimiter];
   let sentMeta = false;
-  while (!csv.indexChunk(8 << 20)) {
-    if (!sentMeta && csv.columnTypes.length > 0) { sendMeta(); sentMeta = true; }
-    send({ type: 'progress', phase: 'indexing', rowsDone: csv.rowCount, done: false });
+  while (!lines.indexChunk(8 << 20)) {
+    if (!sentMeta && lines.columnTypes.length > 0) { sendMeta(); sentMeta = true; }
+    send({ type: 'progress', phase: 'indexing', rowsDone: lines.rowCount, done: false });
     await yieldNow(); // let row requests through while indexing
   }
   if (!sentMeta) sendMeta();
   markIndexed();
-  send({
-    type: 'progress', phase: 'indexing', rowsDone: csv.rowCount, done: true, ms: performance.now() - t0,
-    warning: csv.unclosedQuote ? 'unclosed quote — last cell runs to end of file' : undefined,
-  });
+  const warning = lines instanceof CsvSource
+    ? (lines.unclosedQuote ? 'unclosed quote — last cell runs to end of file' : undefined)
+    : (lines.badLines ? `${lines.badLines.toLocaleString('en-US')} of the first 1,000 lines ${lines.badLines === 1 ? 'is' : 'are'} not valid JSON; such lines show empty` : undefined);
+  send({ type: 'progress', phase: 'indexing', rowsDone: lines.rowCount, done: true, ms: performance.now() - t0, warning });
 }
 
 function loadSheet(name: string) {

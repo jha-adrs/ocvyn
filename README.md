@@ -19,6 +19,7 @@ Everything runs locally. Nothing is uploaded, and your file is never changed.
 - **Select and copy.** Click a cell, a row number (Shift for a range, Ctrl/⌘ to add) or a column header. `Ctrl+C` / `⌘C` copies cells, rows or a whole column as tab-separated text that pastes straight into a spreadsheet.
 - **Easy on the eyes.** Colour-coded columns, striped rows and clear grid lines, all taken from your VS Code theme (light or dark).
 - **Excel files too.** `.xlsx` and `.xls` up to 50 MB, with a sheet picker.
+- **JSON Lines logs.** `.jsonl` and `.ndjson` (one JSON object per line) open as a grid: keys become columns, nested values show as JSON text.
 
 ![Column filter with value counts](media/filter.png)
 
@@ -26,7 +27,7 @@ Everything runs locally. Nothing is uploaded, and your file is never changed.
 
 ## How to use
 
-CSV, TSV, XLSX and XLS files open in OCVYN automatically.
+CSV, TSV, XLSX, XLS, JSONL and NDJSON files open in OCVYN automatically.
 
 - **See the plain text instead:** right-click the tab → *Reopen Editor With…* → *Text Editor*.
 - **Back to the grid:** click the table button at the top right of the editor, or run **Open in OCVYN** from the Command Palette.
@@ -49,6 +50,7 @@ CSV, TSV, XLSX and XLS files open in OCVYN automatically.
 - Cells longer than 10,000 characters are shortened in the grid (copying still gives the full value).
 - Files are read as UTF-8.
 - The view is a snapshot. If the file changes on disk, close and reopen it.
+- JSONL columns come from the keys in the first 1,000 lines. Lines that are not valid JSON show as empty rows.
 - A column's value list shows up to 500,000 distinct values. Filters and LIKE still check every row.
 - Copying is limited to 100,000 rows at a time.
 

@@ -1,5 +1,8 @@
 # Changelog
 
+## Unreleased (data-viewer branch)
+- Opens JSON Lines / NDJSON files (`.jsonl`, `.ndjson`): keys become columns, nested values show as JSON.
+
 ## 0.3.1
 Fixes from a security and code review.
 - A stray `"` inside a field (e.g. `5" pipe`) no longer swallows the rest of the file.
